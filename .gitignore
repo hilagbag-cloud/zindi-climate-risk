@@ -1,0 +1,46 @@
+# ========================
+# zindi-climate-risk
+# ========================
+
+# --- Python byte-compiled / optimised / DLL files ---
+__pycache__/
+*.py[cod]
+*$py.class
+
+# --- Virtual environments ---
+.venv/
+venv/
+env/
+
+# --- IDE / Editor ---
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# --- Data (keep tracked via Git LFS or manually; uncomment to ignore) ---
+# data/*.csv
+
+# --- Model artefacts ---
+*.pkl
+*.joblib
+*.h5
+*.onnx
+
+# --- Jupyter checkpoints ---
+.ipynb_checkpoints/
+
+# --- OS files ---
+Thumbs.db
+
+# --- Logs ---
+*.log
+wandb/
+mlruns/
+
+# --- Distribution / packaging ---
+dist/
+build/
+*.egg-info/
