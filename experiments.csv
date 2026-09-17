@@ -8,3 +8,4 @@ lgbm_1789641242,2026-09-17T10:34:02,lgbm,all_engineered_v2,5,0.808999,0.803219,0
 CatBoost+LGBM+XGBoost_Ensemble_1789641306,2026-09-17T10:35:06,CatBoost+LGBM+XGBoost_Ensemble,all_engineered_v2,10,0.812962,0.812720,0.812865, (Opt Thresh: 0.370)
 CatBoost+LGBM+XGBoost_Ensemble_1789641437,2026-09-17T10:37:17,CatBoost+LGBM+XGBoost_Ensemble,all_engineered_v2,10,0.812962,0.812720,0.812865, (Opt Thresh: 0.370)
 lgbm_1789641535,2026-09-17T10:38:55,lgbm,all_engineered_v2,5,0.808999,0.803219,0.806687, (Opt Thresh: 0.370)
+CatBoost+LGBM+XGBoost_Ensemble_1789642393,2026-09-17T10:53:13,CatBoost+LGBM+XGBoost_Ensemble,all_engineered_v2,5,0.812415,0.810154,0.811511, (Opt Thresh: 0.425)
