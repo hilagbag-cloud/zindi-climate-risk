@@ -144,7 +144,13 @@ def build_features(
     full["temp30_x_rain30"] = full["tavg_30d"] * full["rain_sum_30d"]
     full["temp30_x_ndvi30"] = full["tavg_30d"] * full["ndvi_30d"]
 
-    # 7. Spatial / Categorical Interactions
+    # 7. Climate Anomalies relative to monthly / location baselines
+    for col in ["avg_temperature", "precipitation", "rain_sum_30d", "ndvi_30d"]:
+        if col in full.columns:
+            monthly_loc_mean = full.groupby(["location", "month"])[col].transform("mean")
+            full[f"{col}_anomaly_monthly_loc"] = full[col] - monthly_loc_mean
+
+    # 8. Spatial / Categorical Interactions
     loc_counts = full["location"].value_counts()
     full["location_freq"] = full["location"].map(loc_counts)
 

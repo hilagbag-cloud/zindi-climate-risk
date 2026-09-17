@@ -1,0 +1,90 @@
+```markdown
+# Instructions pour Jules - Stratégie ML & Gestion des Soumissions (Climate Risk)
+
+Tu es un agent expert en Machine Learning et ingénierie logicielle. Ton objectif est d'optimiser le pipeline de ce dépôt pour maximiser le score sur le leaderboard [Climate Risk and Health Prediction Challenge](https://zindi.world/competitions/climate-risk-health-prediction-challenge/submissions) (métrique composite : $0.6 \times \text{F1} + 0.4 \times \text{ROC-AUC}$).
+
+Pour réussir, tu dois travailler de manière méthodique, incrémentale et rigoureuse en conservant **l'historique complet des prédictions générées**.
+
+---
+
+## 1. RÈGLES D'OR & STRATÉGIE DE VALIDATION
+
+1. **Validation Adapte au Domaine (Pas de K-Fold naïf) :**
+   * **Group K-Fold par District / Localisation :** Préviens le *spatial data leakage* en t'assurant qu'une zone géographique ne se retrouve pas à la fois en train et en validation.
+   * **Validation Temporelle (Purged Time-Series Split) :** Évalue la capacité du modèle à prédire les périodes futures à partir des données passées.
+2. **Traçabilité des Expériences (`experiments.log`) :**
+   Toute tentative (modifications de features, hyperparamètres, modèles) doit être consignée à la racine dans `experiments.log` :
+   ```text
+   [YYYY-MM-DD HH:MM] - Exp 01: Baseline CatBoost - CV Score: 0.8241 - Status: [Keep]
+   [YYYY-MM-DD HH:MM] - Exp 02: + Lag 14j Température - CV Score: 0.8290 - Status: [Improved]
+
+```
+
+3. **Respect Strict du Règlement Zindi :**
+* **Interdiction des frameworks AutoML clé en main** (ex. AutoGluon, H2O AutoML).
+* L'ingénierie de variables, l'entraînement et l'ensembling doivent être codés explicitement en Python.
+
+
+
+---
+
+## 2. GESTION DES FICHIERS DE SOUMISSION EN SÉRIE
+
+Afin de pouvoir comparer, sélectionner ou soumettre différentes itérations sur Zindi, **chaque expérience générant une amélioration doit enregistrer sa soumission de manière numérotée et archivée**.
+
+### Structure du Dossier `submission/`
+
+```text
+submission/
+├── best_submission.csv        # Toujours le MEILLEUR fichier absolu (référence)
+├── submission_1.csv           # Baseline / Première itération
+├── submission_2.csv           # Deuxième amélioration
+├── submission_3.csv           # Troisième amélioration
+├── submission_4.csv           # Quatrième amélioration
+└── submission_5.csv           # Cinquième amélioration
+
+```
+
+### Règle d'Archivage pour l'Agent :
+
+* À chaque fois qu'une expérience obtient un score CV local **strictement supérieur** au meilleur score enregistré dans `experiments.log` :
+1. Incrémente le numéro de version ($N+1$) et sauvegarde les prédictions dans `submission/submission_N.csv`.
+2. Écrase `submission/best_submission.csv` avec ce nouveau fichier.
+3. Indique le nom du fichier correspondant dans `experiments.log`.
+
+
+
+---
+
+## 3. LEVIERS PRIORITAIRES POUR FAIRE DÉCOLLER LE SCORE
+
+* **Feature Engineering Climat & Santé :**
+* **Variables décalées (Lags & Rolling Windows) :** Calcule les moyennes glissantes et écarts sur 7, 14 et 30 jours pour capter l'effet différé des températures et précipitations.
+* **Anomalies climatiques :** Écarts par rapport aux moyennes historiques mensuelles.
+
+
+* **Optimisation du Seuil de Décision (Post-Processing) :**
+* Optimise le seuil de classification sur les prédictions Hors-Plis (OOF) via `scipy.optimize` pour maximiser spécifiquement $0.6 \times \text{F1} + 0.4 \times \text{ROC-AUC}$ au lieu de conserver le seuil par défaut de $0.5$.
+
+
+* **Modélisation & Blending :**
+* Combine les prédictions hors-plis de **CatBoost**, **LightGBM** et **XGBoost** via une moyenne pondérée optimisée.
+
+
+
+---
+
+## 4. WORKFLOW D'EXÉCUTION À SUIVRE
+
+1. **Analyse :** Inspecte l'état actuel du code, les données et le dernier score consigné dans `experiments.log`.
+2. **Hypothèse :** Formule une amélioration ciblée dans `src/features/` ou `src/models/`.
+3. **Évaluation :** Exécute `python main.py` et compare le score CV local.
+4. **Mise à jour & Sauvegarde :**
+* Enregistre le résultat dans `experiments.log`.
+* Si le score progresse, génère `submission/submission_N.csv` et mets à jour `submission/best_submission.csv`.
+
+
+
+```
+
+```
