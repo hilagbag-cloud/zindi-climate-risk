@@ -1,16 +1,13 @@
 """
-train.py — Main training, cross-validation and submission generation script.
+train.py — Main training, 10-fold cross-validation, ensembling, and submission generation script.
 
 Usage
 -----
-    # Default: 5-fold CV with LightGBM, writes submission/best_submission.csv
+    # Run 10-fold CV ensemble and generate submission/best_submission.csv
     python src/train.py
 
-    # Baseline logistic regression
-    python src/train.py --model logistic_regression --folds 5
-
-    # XGBoost with custom threshold search
-    python src/train.py --model xgboost --search-threshold
+    # Custom model selection
+    python src/train.py --model ensemble --folds 10
 """
 
 from __future__ import annotations
@@ -25,10 +22,11 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 from sklearn.model_selection import StratifiedKFold
+from sklearn.preprocessing import OrdinalEncoder
 
 # Local imports
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from src.evaluate import score_from_proba, find_best_threshold
+from src.evaluate import score_from_proba, find_best_threshold, zindi_score
 from src.feature_engineering import (
     ID_COL,
     TARGET,
@@ -50,131 +48,118 @@ EXPERIMENTS_CSV = ROOT / "experiments.csv"
 
 
 # ---------------------------------------------------------------------------
-# Cross-Validation
+# Cross-Validation & Ensembling
 # ---------------------------------------------------------------------------
 
-def run_cv(
+def run_ensemble_cv(
     train_df: pd.DataFrame,
-    model_name: str,
-    n_folds: int = 5,
-    search_threshold: bool = False,
+    test_df: pd.DataFrame,
+    n_folds: int = 10,
     random_state: int = 42,
-) -> tuple[np.ndarray, dict[str, float]]:
-    """Run stratified K-fold cross-validation.
-
-    Parameters
-    ----------
-    train_df : pd.DataFrame
-        Feature-engineered training DataFrame (with ID and target columns).
-    model_name : str
-        Name of the model to use (from model registry).
-    n_folds : int
-        Number of CV folds.
-    search_threshold : bool
-        If True, search for best threshold per fold; otherwise use 0.5.
-    random_state : int
-        Random seed for reproducibility.
+) -> tuple[np.ndarray, np.ndarray, dict[str, float], float]:
+    """Run stratified K-fold CV using an ensemble of CatBoost, LightGBM, and XGBoost.
 
     Returns
     -------
     oof_proba : np.ndarray
-        Out-of-fold predicted probabilities (indexed like train_df).
+        Out-of-fold predicted probabilities for training set.
+    test_proba : np.ndarray
+        Averaged test predicted probabilities across folds and models.
     metrics : dict
-        Aggregated metrics across folds.
+        Aggregated metrics (F1, AUC, Combined score).
+    best_threshold : float
+        Optimal threshold found on OOF probabilities to maximize combined score.
     """
     X = train_df.drop(columns=[ID_COL, TARGET])
     y = train_df[TARGET].values
-
-    numeric_features, categorical_features = get_feature_columns(train_df)
-
-    skf = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=random_state)
-
-    oof_proba = np.zeros(len(train_df))
-    fold_scores: list[dict[str, float]] = []
-
-    for fold_idx, (train_idx, val_idx) in enumerate(skf.split(X, y), start=1):
-        print(f"\n{'='*60}")
-        print(f"  Fold {fold_idx}/{n_folds}")
-        print(f"{'='*60}")
-
-        X_train, X_val = X.iloc[train_idx], X.iloc[val_idx]
-        y_train, y_val = y[train_idx], y[val_idx]
-
-        pipeline = get_model(model_name, numeric_features, categorical_features)
-        pipeline.fit(X_train, y_train)
-
-        val_proba = pipeline.predict_proba(X_val)[:, 1]
-        oof_proba[val_idx] = val_proba
-
-        if search_threshold:
-            fold_result = find_best_threshold(y_val, val_proba)
-        else:
-            fold_result = score_from_proba(y_val, val_proba, threshold=0.5)
-
-        fold_scores.append(fold_result)
-        print(f"  F1:       {fold_result['f1']:.6f}")
-        print(f"  ROC-AUC:  {fold_result['roc_auc']:.6f}")
-        print(f"  Combined: {fold_result['combined_score']:.6f}")
-        if search_threshold:
-            print(f"  Threshold: {fold_result['threshold']:.3f}")
-
-    # Aggregate
-    mean_f1 = np.mean([s["f1"] for s in fold_scores])
-    mean_auc = np.mean([s["roc_auc"] for s in fold_scores])
-    mean_combined = np.mean([s["combined_score"] for s in fold_scores])
-
-    print(f"\n{'='*60}")
-    print(f"  CV Summary ({n_folds} folds)")
-    print(f"{'='*60}")
-    print(f"  Mean F1:       {mean_f1:.6f}")
-    print(f"  Mean ROC-AUC:  {mean_auc:.6f}")
-    print(f"  Mean Combined: {mean_combined:.6f}")
-
-    metrics = {
-        "mean_f1": mean_f1,
-        "mean_roc_auc": mean_auc,
-        "mean_combined_score": mean_combined,
-    }
-
-    return oof_proba, metrics
-
-
-# ---------------------------------------------------------------------------
-# Full train + predict
-# ---------------------------------------------------------------------------
-
-def train_and_predict(
-    train_df: pd.DataFrame,
-    test_df: pd.DataFrame,
-    model_name: str,
-    threshold: float = 0.5,
-) -> pd.DataFrame:
-    """Train on full training data and generate submission.
-
-    Returns
-    -------
-    submission : pd.DataFrame
-        DataFrame with columns [ID, TargetF1, TargetRAUC].
-    """
-    X_train = train_df.drop(columns=[ID_COL, TARGET])
-    y_train = train_df[TARGET].values
     X_test = test_df.drop(columns=[ID_COL])
 
     numeric_features, categorical_features = get_feature_columns(train_df)
 
-    pipeline = get_model(model_name, numeric_features, categorical_features)
-    pipeline.fit(X_train, y_train)
+    # Convert categorical columns to category dtypes for CatBoost and LightGBM
+    X_cat = X.copy()
+    X_test_cat = X_test.copy()
+    for col in categorical_features:
+        X_cat[col] = X_cat[col].astype("category")
+        X_test_cat[col] = X_test_cat[col].astype("category")
 
-    test_proba = pipeline.predict_proba(X_test)[:, 1]
-    test_labels = (test_proba >= threshold).astype(int)
+    # Consistent Ordinal Encoding fitted on train for XGBoost
+    X_num = X.copy()
+    X_test_num = X_test.copy()
+    ord_enc = OrdinalEncoder(handle_unknown="use_encoded_value", unknown_value=-1)
+    X_num[categorical_features] = ord_enc.fit_transform(X[categorical_features].astype(str))
+    X_test_num[categorical_features] = ord_enc.transform(X_test[categorical_features].astype(str))
 
-    submission = pd.DataFrame({
-        ID_COL: test_df[ID_COL],
-        "TargetF1": test_labels,
-        "TargetRAUC": test_proba,
-    })
+    skf = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=random_state)
 
-    return submission
+    oof_cat = np.zeros(len(train_df))
+    oof_lgb = np.zeros(len(train_df))
+    oof_xgb = np.zeros(len(train_df))
+
+    test_cat = np.zeros(len(test_df))
+    test_lgb = np.zeros(len(test_df))
+    test_xgb = np.zeros(len(test_df))
+
+    print(f"\nTraining 3-Model Ensemble with {n_folds}-Fold Stratified Cross-Validation...")
+
+    for fold_idx, (train_idx, val_idx) in enumerate(skf.split(X, y), start=1):
+        X_tr_cat, X_va_cat = X_cat.iloc[train_idx], X_cat.iloc[val_idx]
+        X_tr_num, X_va_num = X_num.iloc[train_idx], X_num.iloc[val_idx]
+        y_tr, y_va = y[train_idx], y[val_idx]
+
+        # 1. CatBoost
+        model_cat = get_model(
+            "catboost",
+            categorical_features=categorical_features,
+            random_state=random_state + fold_idx,
+            train_dir="/tmp/catboost_info",
+        )
+        model_cat.fit(X_tr_cat, y_tr)
+        oof_cat[val_idx] = model_cat.predict_proba(X_va_cat)[:, 1]
+        test_cat += model_cat.predict_proba(X_test_cat)[:, 1] / n_folds
+
+        # 2. LightGBM
+        model_lgb = get_model("lgbm", random_state=random_state + fold_idx)
+        model_lgb.fit(X_tr_cat, y_tr)
+        oof_lgb[val_idx] = model_lgb.predict_proba(X_va_cat)[:, 1]
+        test_lgb += model_lgb.predict_proba(X_test_cat)[:, 1] / n_folds
+
+        # 3. XGBoost
+        model_xgb = get_model("xgboost", random_state=random_state + fold_idx)
+        model_xgb.fit(X_tr_num, y_tr)
+        oof_xgb[val_idx] = model_xgb.predict_proba(X_va_num)[:, 1]
+        test_xgb += model_xgb.predict_proba(X_test_num)[:, 1] / n_folds
+
+        fold_ens = 0.5 * oof_cat[val_idx] + 0.3 * oof_xgb[val_idx] + 0.2 * oof_lgb[val_idx]
+        f_score = zindi_score(y_va, (fold_ens >= 0.5).astype(int), fold_ens)
+        print(f"  Fold {fold_idx:2d}/{n_folds:2d} | F1: {f_score['f1']:.4f} | AUC: {f_score['roc_auc']:.4f} | Score: {f_score['combined_score']:.4f}")
+
+    # Combine OOF predictions
+    weights = (0.5, 0.3, 0.2)  # CatBoost, XGBoost, LightGBM
+    oof_proba = weights[0] * oof_cat + weights[1] * oof_xgb + weights[2] * oof_lgb
+    test_proba = weights[0] * test_cat + weights[1] * test_xgb + weights[2] * test_lgb
+
+    # Evaluate default 0.5 threshold
+    default_res = score_from_proba(y, oof_proba, threshold=0.5)
+
+    # Search best threshold on OOF for F1 optimization
+    best_res = find_best_threshold(y, oof_proba, low=0.20, high=0.80, step=0.005)
+    best_threshold = best_res["threshold"]
+
+    print(f"\n{'='*60}")
+    print(f"  Overall OOF Evaluation ({n_folds} Folds)")
+    print(f"{'='*60}")
+    print(f"  Default Thresh (0.500) -> F1: {default_res['f1']:.6f} | AUC: {default_res['roc_auc']:.6f} | Combined: {default_res['combined_score']:.6f}")
+    print(f"  Optimal Thresh ({best_threshold:.3f}) -> F1: {best_res['f1']:.6f} | AUC: {best_res['roc_auc']:.6f} | Combined: {best_res['combined_score']:.6f}")
+
+    metrics = {
+        "mean_f1": best_res["f1"],
+        "mean_roc_auc": best_res["roc_auc"],
+        "mean_combined_score": best_res["combined_score"],
+        "threshold": best_threshold,
+    }
+
+    return oof_proba, test_proba, metrics, best_threshold
 
 
 # ---------------------------------------------------------------------------
@@ -192,12 +177,12 @@ def log_experiment(
         "experiment_id": f"{model_name}_{int(time.time())}",
         "timestamp": datetime.now().isoformat(timespec="seconds"),
         "model_type": model_name,
-        "features": "all_engineered",
+        "features": "all_engineered_v2",
         "cv_folds": n_folds,
         "mean_f1": f"{metrics['mean_f1']:.6f}",
         "mean_auc": f"{metrics['mean_roc_auc']:.6f}",
         "mean_combined_score": f"{metrics['mean_combined_score']:.6f}",
-        "notes": notes,
+        "notes": f"{notes} (Opt Thresh: {metrics.get('threshold', 0.5):.3f})",
     }
 
     file_exists = EXPERIMENTS_CSV.exists()
@@ -211,7 +196,7 @@ def log_experiment(
 
 
 # ---------------------------------------------------------------------------
-# Main
+# Main Execution
 # ---------------------------------------------------------------------------
 
 def main() -> None:
@@ -219,31 +204,15 @@ def main() -> None:
     parser.add_argument(
         "--model",
         type=str,
-        default="lgbm",
-        choices=["logistic_regression", "lgbm", "xgboost"],
-        help="Model to train (default: lgbm)",
+        default="ensemble",
+        choices=["ensemble", "catboost", "lgbm", "xgboost"],
+        help="Model pipeline to train (default: ensemble)",
     )
     parser.add_argument(
         "--folds",
         type=int,
-        default=5,
-        help="Number of CV folds (default: 5)",
-    )
-    parser.add_argument(
-        "--search-threshold",
-        action="store_true",
-        help="Grid-search optimal threshold for combined score",
-    )
-    parser.add_argument(
-        "--threshold",
-        type=float,
-        default=0.5,
-        help="Fixed decision threshold for submission (default: 0.5)",
-    )
-    parser.add_argument(
-        "--no-submit",
-        action="store_true",
-        help="Skip submission generation (CV only)",
+        default=10,
+        help="Number of CV folds (default: 10)",
     )
     args = parser.parse_args()
 
@@ -252,41 +221,39 @@ def main() -> None:
     train_raw, test_raw, climate = load_raw_data(DATA_DIR)
     print(f"  Train: {train_raw.shape}, Test: {test_raw.shape}, Climate: {climate.shape}")
 
-    # 2. Feature engineering
+    # 2. Build enriched features
     print("\nBuilding features...")
     train_df, test_df = build_features(train_raw, test_raw, climate)
     print(f"  Train features: {train_df.shape}, Test features: {test_df.shape}")
 
-    # 3. Cross-validation
-    print(f"\nRunning {args.folds}-fold CV with model={args.model}...")
-    oof_proba, metrics = run_cv(
-        train_df,
-        model_name=args.model,
-        n_folds=args.folds,
-        search_threshold=args.search_threshold,
+    # 3. Cross-Validation and Ensembling
+    oof_proba, test_proba, metrics, best_threshold = run_ensemble_cv(
+        train_df, test_df, n_folds=args.folds
     )
 
-    # 4. Log experiment
-    log_experiment(args.model, args.folds, metrics)
+    # 4. Log Experiment
+    log_experiment("CatBoost+LGBM+XGBoost_Ensemble", args.folds, metrics)
 
-    # 5. Generate submission
-    if not args.no_submit:
-        print("\nTraining on full data and generating submission...")
-        submission = train_and_predict(
-            train_df, test_df,
-            model_name=args.model,
-            threshold=args.threshold,
-        )
+    # 5. Generate Submission File
+    print("\nGenerating final submission file...")
+    test_labels = (test_proba >= best_threshold).astype(int)
 
-        SUBMISSION_DIR.mkdir(parents=True, exist_ok=True)
-        out_path = SUBMISSION_DIR / "best_submission.csv"
-        submission.to_csv(out_path, index=False)
-        print(f"\nSubmission saved to {out_path}")
-        print(f"  Shape: {submission.shape}")
-        print(f"  TargetF1 distribution: {submission['TargetF1'].value_counts().to_dict()}")
-        print(f"  TargetRAUC stats: min={submission['TargetRAUC'].min():.4f}, "
-              f"max={submission['TargetRAUC'].max():.4f}, "
-              f"mean={submission['TargetRAUC'].mean():.4f}")
+    submission = pd.DataFrame({
+        ID_COL: test_df[ID_COL],
+        "TargetF1": test_labels,
+        "TargetRAUC": test_proba,
+    })
+
+    SUBMISSION_DIR.mkdir(parents=True, exist_ok=True)
+    out_path = SUBMISSION_DIR / "best_submission.csv"
+    submission.to_csv(out_path, index=False)
+
+    print(f"\nSubmission saved to {out_path}")
+    print(f"  Shape: {submission.shape}")
+    print(f"  TargetF1 distribution: {submission['TargetF1'].value_counts().to_dict()}")
+    print(f"  TargetRAUC stats: min={submission['TargetRAUC'].min():.4f}, "
+          f"max={submission['TargetRAUC'].max():.4f}, "
+          f"mean={submission['TargetRAUC'].mean():.4f}")
 
 
 if __name__ == "__main__":

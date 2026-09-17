@@ -1,15 +1,15 @@
 """
 feature_engineering.py — Feature engineering pipeline.
 
-Converts the starter notebook logic into a reusable, production-quality
-feature engineering module.  All transformations are applied identically
-to train and test sets via a single ``build_features()`` entry point.
+Converts the raw datasets and climate features into an enriched representation
+optimized for predicting climate-sensitive health outcomes.
+All transformations are applied consistently across train and test sets.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
+from typing import Tuple
 
 import numpy as np
 import pandas as pd
@@ -23,10 +23,11 @@ ID_COL = "ID"
 TARGET = "is_climate_sensitive"
 DATE_COL = "deathdate"
 
-# Columns explicitly excluded in the starter notebook
-COLS_TO_DROP = ["location", "latitude", "longitude"]
+# Columns to drop if raw or redundant
+COLS_TO_DROP = ["deathdate", "latitude", "longitude"]
 
-CATEGORICAL_FEATURES = ["zone", "gender"]
+CATEGORICAL_FEATURES = ["zone", "gender", "location", "zone_gender"]
+
 
 # ---------------------------------------------------------------------------
 # Loading helpers
@@ -34,7 +35,7 @@ CATEGORICAL_FEATURES = ["zone", "gender"]
 
 def load_raw_data(
     data_dir: str | Path = "data",
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Load Train, Test and climate_features from ``data_dir``.
 
     Returns
@@ -48,130 +49,15 @@ def load_raw_data(
     return train, test, climate
 
 
-def merge_climate(
-    df: pd.DataFrame,
-    climate: pd.DataFrame,
-) -> pd.DataFrame:
-    """Merge climate features onto *df* by ID.
-
-    Drops the duplicate ``deathdate`` column coming from the climate CSV.
-    """
-    climate_clean = climate.drop(columns=[DATE_COL], errors="ignore")
-    return df.merge(climate_clean, on=ID_COL, how="left")
-
-
 # ---------------------------------------------------------------------------
-# Feature engineering (from starter notebook + new ideas)
-# ---------------------------------------------------------------------------
-
-def _add_date_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Extract temporal features from deathdate.
-
-    Features added:
-        - ``day_of_year``
-        - ``month``
-        - ``year``
-        - ``day_of_year_sin``, ``day_of_year_cos`` (cyclical encoding)
-    """
-    dt = pd.to_datetime(df[DATE_COL], errors="coerce")
-    df["day_of_year"] = dt.dt.dayofyear
-    df["month"] = dt.dt.month
-    df["year"] = dt.dt.year
-
-    # Cyclical encoding
-    df["day_of_year_sin"] = np.sin(2 * np.pi * df["day_of_year"] / 365.25)
-    df["day_of_year_cos"] = np.cos(2 * np.pi * df["day_of_year"] / 365.25)
-
-    return df
-
-
-def _add_temperature_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Derive temperature-based interaction features."""
-    df["temperature_range"] = df["max_temperature"] - df["min_temperature"]
-
-    # Deviation of daily avg from 30-day avg
-    if "tavg_30d" in df.columns:
-        df["temp_deviation_30d"] = df["avg_temperature"] - df["tavg_30d"]
-
-    # Deviation of daily avg from 90-day avg
-    if "tavg_90d" in df.columns:
-        df["temp_deviation_90d"] = df["avg_temperature"] - df["tavg_90d"]
-
-    # Ratio of temperature range to mean range over 30d
-    if "temp_range_mean_30d" in df.columns:
-        df["temp_range_ratio_30d"] = df["temperature_range"] / (df["temp_range_mean_30d"] + 1e-6)
-
-    return df
-
-
-def _add_precipitation_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Derive precipitation-based interaction features."""
-    df["is_rainy_day_current"] = (df["precipitation"] > 0).astype(int)
-
-    if "rain_sum_30d" in df.columns and "rain_sum_90d" in df.columns:
-        df["rain_ratio_30d_90d"] = df["rain_sum_30d"] / (df["rain_sum_90d"] + 1e-6)
-
-    if "rain_sum_7d" in df.columns and "rain_sum_30d" in df.columns:
-        df["rain_ratio_7d_30d"] = df["rain_sum_7d"] / (df["rain_sum_30d"] + 1e-6)
-
-    if "max_daily_rain_30d" in df.columns and "rain_sum_30d" in df.columns:
-        df["max_rain_proportion_30d"] = df["max_daily_rain_30d"] / (df["rain_sum_30d"] + 1e-6)
-
-    return df
-
-
-def _add_vegetation_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Derive vegetation-based features."""
-    if "ndvi_30d" in df.columns and "ndvi_90d" in df.columns:
-        df["ndvi_change_30d_90d"] = df["ndvi_30d"] - df["ndvi_90d"]
-
-    return df
-
-
-def _add_age_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Categorise age into risk groups."""
-    bins = [-1, 1, 5, 15, 45, 65, 200]
-    labels = ["infant", "young_child", "child", "adult", "senior", "elderly"]
-    df["age_group"] = pd.cut(df["age"], bins=bins, labels=labels)
-    df["age_group"] = df["age_group"].astype(str)
-
-    # Log-transform age (common for skewed distributions)
-    df["age_log"] = np.log1p(df["age"])
-
-    return df
-
-
-def _add_interaction_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Derive cross-domain interaction features."""
-    # Temperature × Precipitation interactions
-    df["temp_x_precip"] = df["avg_temperature"] * df["precipitation"]
-
-    if "tavg_30d" in df.columns and "rain_sum_30d" in df.columns:
-        df["tavg30d_x_rain30d"] = df["tavg_30d"] * df["rain_sum_30d"]
-
-    # Age × Temperature interaction
-    df["age_x_temp"] = df["age"] * df["avg_temperature"]
-
-    return df
-
-
-def _drop_and_clean(df: pd.DataFrame, is_train: bool) -> pd.DataFrame:
-    """Drop raw date and unnecessary columns; ensure correct dtypes."""
-    cols_to_drop = [DATE_COL] + COLS_TO_DROP
-    cols_to_drop = [c for c in cols_to_drop if c in df.columns]
-    df = df.drop(columns=cols_to_drop)
-    return df
-
-
-# ---------------------------------------------------------------------------
-# Public API
+# Feature engineering pipeline
 # ---------------------------------------------------------------------------
 
 def build_features(
     train: pd.DataFrame,
     test: pd.DataFrame,
     climate: pd.DataFrame,
-) -> tuple[pd.DataFrame, pd.DataFrame]:
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """End-to-end feature engineering pipeline.
 
     Parameters
@@ -188,30 +74,102 @@ def build_features(
     train_df, test_df : tuple of DataFrames
         Feature-engineered DataFrames ready for modelling.
     """
-    # 1. Merge climate features
-    train_df = merge_climate(train, climate)
-    test_df = merge_climate(test, climate)
+    climate_clean = climate.drop(columns=[DATE_COL], errors="ignore")
+    trn = train.merge(climate_clean, on=ID_COL, how="left")
+    tst = test.merge(climate_clean, on=ID_COL, how="left")
 
-    # 2. Apply feature engineering
-    for transform_fn in [
-        _add_date_features,
-        _add_temperature_features,
-        _add_precipitation_features,
-        _add_vegetation_features,
-        _add_age_features,
-        _add_interaction_features,
-    ]:
-        train_df = transform_fn(train_df)
-        test_df = transform_fn(test_df)
+    n_train = len(train)
+    full = pd.concat([trn, tst], ignore_index=True)
 
-    # 3. Cleanup
-    train_df = _drop_and_clean(train_df, is_train=True)
-    test_df = _drop_and_clean(test_df, is_train=False)
+    # 1. Temporal Features
+    dt = pd.to_datetime(full[DATE_COL], errors="coerce")
+    full["day_of_year"] = dt.dt.dayofyear
+    full["month"] = dt.dt.month
+    full["year"] = dt.dt.year
+    full["day"] = dt.dt.day
+    full["day_of_week"] = dt.dt.dayofweek
+    full["is_weekend"] = (dt.dt.dayofweek >= 5).astype(int)
+    full["quarter"] = dt.dt.quarter
+
+    # Cyclical encodings
+    full["doy_sin"] = np.sin(2 * np.pi * full["day_of_year"] / 365.25)
+    full["doy_cos"] = np.cos(2 * np.pi * full["day_of_year"] / 365.25)
+    full["month_sin"] = np.sin(2 * np.pi * full["month"] / 12)
+    full["month_cos"] = np.cos(2 * np.pi * full["month"] / 12)
+
+    # 2. Age Features (Age is strongly correlated with climate sensitivity)
+    full["age_log"] = np.log1p(full["age"])
+    full["age_sq"] = full["age"] ** 2
+    full["age_sqrt"] = np.sqrt(full["age"])
+
+    full["is_infant"] = (full["age"] == 0).astype(int)
+    full["is_under_1"] = (full["age"] <= 1).astype(int)
+    full["is_under_5"] = (full["age"] <= 5).astype(int)
+    full["is_under_15"] = (full["age"] <= 15).astype(int)
+    full["is_working_age"] = ((full["age"] > 15) & (full["age"] < 60)).astype(int)
+    full["is_senior"] = (full["age"] >= 60).astype(int)
+    full["is_elderly"] = (full["age"] >= 75).astype(int)
+
+    age_bins = [-1, 0, 1, 5, 12, 18, 30, 45, 60, 75, 120]
+    full["age_bin"] = pd.cut(full["age"], bins=age_bins, labels=False)
+
+    # 3. Temperature Interaction & Anomaly Features
+    full["temp_range"] = full["max_temperature"] - full["min_temperature"]
+    full["temp_dev_30d"] = full["avg_temperature"] - full["tavg_30d"]
+    full["temp_dev_90d"] = full["avg_temperature"] - full["tavg_90d"]
+    full["temp_dev_7d"] = full["avg_temperature"] - full["tavg_7d"]
+    full["tmax_dev_30d"] = full["max_temperature"] - full["tmax_30d"]
+    full["tmin_dev_30d"] = full["min_temperature"] - full["tmin_30d"]
+    full["hot_days_ratio"] = full["hot_days_30d"] / 30.0
+    full["temp_anomaly_7_30"] = full["tavg_7d"] - full["tavg_30d"]
+    full["temp_anomaly_30_90"] = full["tavg_30d"] - full["tavg_90d"]
+
+    # 4. Precipitation & Moisture Features
+    full["is_rainy"] = (full["precipitation"] > 0).astype(int)
+    full["rain_days_ratio_30d"] = full["rain_days_30d"] / 30.0
+    full["rain_dev_30d"] = full["precipitation"] - (full["rain_sum_30d"] / 30.0)
+    full["rain_ratio_7_30"] = full["rain_sum_7d"] / (full["rain_sum_30d"] + 1e-5)
+    full["rain_ratio_30_90"] = full["rain_sum_30d"] / (full["rain_sum_90d"] + 1e-5)
+    full["max_rain_prop"] = full["max_daily_rain_30d"] / (full["rain_sum_30d"] + 1e-5)
+
+    # 5. Vegetation & Terrain Features
+    full["ndvi_diff"] = full["ndvi_30d"] - full["ndvi_90d"]
+    full["ndvi_ratio"] = full["ndvi_30d"] / (full["ndvi_90d"] + 1e-5)
+
+    # 6. Domain Interaction Features
+    full["age_x_temp"] = full["age"] * full["avg_temperature"]
+    full["age_x_rain30"] = full["age"] * full["rain_sum_30d"]
+    full["age_x_ndvi30"] = full["age"] * full["ndvi_30d"]
+    full["temp_x_precip"] = full["avg_temperature"] * full["precipitation"]
+    full["temp30_x_rain30"] = full["tavg_30d"] * full["rain_sum_30d"]
+    full["temp30_x_ndvi30"] = full["tavg_30d"] * full["ndvi_30d"]
+
+    # 7. Spatial / Categorical Interactions
+    loc_counts = full["location"].value_counts()
+    full["location_freq"] = full["location"].map(loc_counts)
+
+    for col in ["age", "avg_temperature", "elevation", "ndvi_30d"]:
+        loc_mean = full.groupby("location")[col].transform("mean")
+        full[f"{col}_mean_by_loc"] = loc_mean
+        full[f"{col}_diff_loc_mean"] = full[col] - loc_mean
+
+    full["zone_gender"] = full["zone"].astype(str) + "_" + full["gender"].astype(str)
+
+    # Drop raw date and unnecessary columns
+    drop_cols = [c for c in COLS_TO_DROP if c in full.columns]
+    full = full.drop(columns=drop_cols)
+
+    train_df = full.iloc[:n_train].copy()
+    test_df = full.iloc[n_train:].copy()
+
+    # Drop target from test if present
+    if TARGET in test_df.columns:
+        test_df = test_df.drop(columns=[TARGET])
 
     return train_df, test_df
 
 
-def get_feature_columns(df: pd.DataFrame) -> tuple[list[str], list[str]]:
+def get_feature_columns(df: pd.DataFrame) -> Tuple[list[str], list[str]]:
     """Return (numeric_features, categorical_features) lists.
 
     Excludes ID and target columns.
@@ -223,4 +181,3 @@ def get_feature_columns(df: pd.DataFrame) -> tuple[list[str], list[str]]:
     numeric = [c for c in cols if pd.api.types.is_numeric_dtype(df[c])]
 
     return numeric, categorical
-
