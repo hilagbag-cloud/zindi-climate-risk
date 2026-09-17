@@ -149,9 +149,10 @@ def build_features(
     full["location_freq"] = full["location"].map(loc_counts)
 
     for col in ["age", "avg_temperature", "elevation", "ndvi_30d"]:
-        loc_mean = full.groupby("location")[col].transform("mean")
-        full[f"{col}_mean_by_loc"] = loc_mean
-        full[f"{col}_diff_loc_mean"] = full[col] - loc_mean
+        if col in full.columns:
+            loc_mean = full.groupby("location")[col].transform("mean")
+            full[f"{col}_mean_by_loc"] = loc_mean
+            full[f"{col}_diff_loc_mean"] = full[col] - loc_mean
 
     full["zone_gender"] = full["zone"].astype(str) + "_" + full["gender"].astype(str)
 
