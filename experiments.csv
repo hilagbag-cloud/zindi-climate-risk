@@ -1,3 +1,6 @@
 experiment_id,timestamp,model_type,features,cv_folds,mean_f1,mean_auc,mean_combined_score,notes
 baseline_lr,2026-09-16,LogisticRegression,"zone+gender+age+temps+precip+climate_features (excl location/lat/lon)",1 (80/20 split),,,,"Starter notebook baseline — LogisticRegression with StandardScaler + OHE"
 logistic_regression_1789580121,2026-09-16T18:35:21,logistic_regression,all_engineered,3,0.768490,0.805524,0.783303,
+lgbm_1789639950,2026-09-17T10:12:30,lgbm,all_engineered,5,0.785770,0.794744,0.789360,
+CatBoost+LGBM+XGBoost_Ensemble_1789640605,2026-09-17T10:23:25,CatBoost+LGBM+XGBoost_Ensemble,all_engineered_v2,10,0.812962,0.812720,0.812865, (Opt Thresh: 0.370)
+CatBoost+LGBM+XGBoost_Ensemble_1789640866,2026-09-17T10:27:46,CatBoost+LGBM+XGBoost_Ensemble,all_engineered_v2,10,0.812962,0.812720,0.812865, (Opt Thresh: 0.370)
